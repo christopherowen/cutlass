@@ -191,9 +191,20 @@ sm120_compute_tile_shape_or_override() {
         }
       }
       else {
-        // Compute epilogue tile that divides CTA tile (for M < 128 or N < 32 support)
+        // SM120 has limited shared memory (99KB vs 227KB on SM100).
+        // Use smaller epilogue tiles to reduce smem pressure and leave more room for mainloop stages.
+        // The epilogue storage is: (EpiM * EpiN) * StagesC * sizeof(Element)
+        // Where StagesC is capped at 3. Smaller tiles = less smem per stage.
+        //
+        // Hardware constraints (from sm90_epilogue_array_tma_warpspecialized.hpp):
+        //   - EPI_TILE_M must be divisible by MMA_TILE_M (typically 64 for 2-warp configs)
+        //   - EPI_TILE_N has similar constraints based on MMA partitioning
+        //
+        // For M: Use minimum of 64 (MMA tile constraint) or CTA_M if smaller
+        // For N: Use 16 as minimum (good vectorization, divides most N values)
         constexpr int EpiM = cute::min(64, CTA_M);
-        constexpr int EpiN = cute::gcd(cute::min(32, CTA_N), CTA_N);
+        constexpr int EpiN = (CTA_N % 16 == 0) ? 16 : ((CTA_N % 8 == 0) ? 8 : CTA_N);
+        
         return Shape<Int<EpiM>, Int<EpiN>>{};
       }
     }
