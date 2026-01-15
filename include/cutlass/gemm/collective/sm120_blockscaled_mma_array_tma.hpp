@@ -258,10 +258,14 @@ struct CollectiveMma<
                                                 cutlass::detail::float_e3m2_unpacksmem_t,
                                                 uint_bit_t<sizeof_bits_v<ElementB>>>>>>;
 
-  // For MXF8F6F4 mode, use actual element types for ArrayEngine allocation.
-  // This allows array_subbyte to correctly pack FP4 elements (2 per byte).
+  // For MXF8F6F4 mode with FP4 weights:
+  // Both SmemAllocTypeA and SmemAllocTypeB use uint8_t because:
+  // 1. The ldmatrix.b4x16_p64 instruction requires padded format (16B per 16 FP4 values)
+  // 2. PTX spec: "allocate SMEM as if sub-byte operands were byte operands"
+  // 3. The "_p64" suffix means 64 bits of padding per 16×4-bit chunk
+  // This is a hardware contract, not inefficiency - the "extra" bytes are required padding.
   using SmemAllocTypeA = cute::conditional_t<IsF8F6F4, uint8_t, typename TiledMma::ValTypeA>;
-  using SmemAllocTypeB = cute::conditional_t<IsF8F6F4, ElementB, typename TiledMma::ValTypeB>;
+  using SmemAllocTypeB = cute::conditional_t<IsF8F6F4, uint8_t, typename TiledMma::ValTypeB>;
 
   // Set the bytes transferred in this TMA transaction (may involve multiple issues)
   static constexpr uint32_t TmaTransactionBytesMK = static_cast<uint32_t>(
