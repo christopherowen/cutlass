@@ -192,16 +192,22 @@ sm120_compute_tile_shape_or_override() {
       }
       else {
         // SM120 has limited shared memory (99KB vs 227KB on SM100).
-        // Use smaller epilogue tiles to reduce smem pressure and leave more room for mainloop stages.
-        // The epilogue storage is: (EpiM * EpiN) * StagesC * sizeof(Element)
-        // Where StagesC is capped at 3. Smaller tiles = less smem per stage.
+        // Balance smem savings with copy atom performance.
         //
-        // Hardware constraints (from sm90_epilogue_array_tma_warpspecialized.hpp):
-        //   - EPI_TILE_M must be divisible by MMA_TILE_M (typically 64 for 2-warp configs)
-        //   - EPI_TILE_N has similar constraints based on MMA partitioning
+        // Hardware constraints:
+        //   - EPI_TILE_M must be divisible by MMA_TILE_M (64 for 2-warp 128x128 CTA)
+        //   - For small tiles: MMA_TILE_N (64) must be divisible by EPI_TILE_N
+        //   - Copy atoms: stmatrix requires EpiN >= 16 for compatible swizzle
         //
-        // For M: Use minimum of 64 (MMA tile constraint) or CTA_M if smaller
-        // For N: Use 16 as minimum (good vectorization, divides most N values)
+        // Trade-off analysis (for 128x128 CTA):
+        //   - EpiN=8:  ~2KB smem, AutoVectorizingCopy (slow), 5.70 stages
+        //   - EpiN=16: ~4KB smem, stmatrix.x1 (fast), 5.58 stages
+        //   Both round to 5 stages, so prefer EpiN=16 for faster stmatrix.
+        //
+        // Use (64, 16) for best balance of smem and performance:
+        //   - 64 % 64 = 0 (MMA constraint satisfied)
+        //   - 64 % 16 = 0 (MMA_N divisible by EPI_N)
+        //   - Uses SM90_U32x1_STSM_N (hardware-accelerated stmatrix)
         constexpr int EpiM = cute::min(64, CTA_M);
         constexpr int EpiN = (CTA_N % 16 == 0) ? 16 : ((CTA_N % 8 == 0) ? 8 : CTA_N);
         
@@ -285,7 +291,8 @@ struct CallbacksBuilder<
   using SmemLayoutAtomAux = decltype(detail::sm90_get_epilogue_smem_swizzle_layout_atom<
     GmemStrideTypeAux, typename FusionOp::ElementAux, EpilogueTile_MN>());
 
-  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<GmemStrideTypeAux, typename FusionOp::ElementAux>());
+  static constexpr int EpiN = cute::size<1>(EpilogueTile_MN{});
+  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<GmemStrideTypeAux, typename FusionOp::ElementAux, EpiN>());
 
   using CopyOpS2R = decltype(detail::sm120_get_smem_load_op_for_source<GmemStrideTypeAux, typename FusionOp::ElementAux>());
   
@@ -326,7 +333,8 @@ struct CallbacksBuilder<
   using SmemLayoutAtomAux = decltype(detail::sm90_get_epilogue_smem_swizzle_layout_atom<
     GmemStrideTypeAux, typename FusionOp::ElementAux, EpilogueTile_MN>());
 
-  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<GmemStrideTypeAux, typename FusionOp::ElementAux>());
+  static constexpr int EpiN = cute::size<1>(EpilogueTile_MN{});
+  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<GmemStrideTypeAux, typename FusionOp::ElementAux, EpiN>());
 
   using CopyOpS2R = decltype(detail::sm120_get_smem_load_op_for_source<GmemStrideTypeAux, typename FusionOp::ElementAux>());
   
@@ -390,7 +398,8 @@ struct Sm120TmaBuilderImpl {
 
   using CopyOpS2R = decltype(detail::sm120_get_smem_load_op_for_source<UnderlyingGmemStrideTypeC, ElementC>());
 
-  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<UnderlyingGmemStrideTypeD, ElementD>());
+  static constexpr int EpiN = cute::size<1>(EpilogueTile_MN{});
+  using CopyOpR2S = decltype(detail::sm120_get_smem_store_op_for_accumulator<UnderlyingGmemStrideTypeD, ElementD, EpiN>());
 
   // Get register to register tiled copy that happen before shared memory store.
   using CopyOpR2R = decltype(detail::sm120_get_register_transform_op<UnderlyingGmemStrideTypeD, ElementD>());
