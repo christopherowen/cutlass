@@ -191,7 +191,10 @@ sm120_compute_tile_shape_or_override() {
         }
       }
       else {
-        return Shape<_64, _32>{};
+        // Compute epilogue tile that divides CTA tile (for M < 128 or N < 32 support)
+        constexpr int EpiM = cute::min(64, CTA_M);
+        constexpr int EpiN = cute::gcd(cute::min(32, CTA_N), CTA_N);
+        return Shape<Int<EpiM>, Int<EpiN>>{};
       }
     }
   } // EpilogueTileAuto

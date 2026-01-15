@@ -132,6 +132,23 @@ struct CollectiveMma<
   static constexpr int SFVecSize = TiledMma::Traits::SFVecSize;
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVecSize>;
 
+  // Scale factor tile shapes - dimensions must be padded to at least Blk_MN (128) for TMA.
+  // This matches the SmemLayout sizing in Sm1xxBlockScaledConfig::deduce_smem_layout*
+  // which uses ceil_div(MMA_M/N, Blk_MN) * Blk_MN.
+  using Blk_MN = typename Sm1xxBlkScaledConfig::Blk_MN;  // = 128
+
+  // Scale factor A tile shape - M dimension padded to at least 128 for TMA
+  static constexpr int TileM_SFA = cute::ceil_div(cute::size<0>(TileShape{}), Blk_MN{}) * Blk_MN{};
+  using TileShape_SFA = decltype(cute::make_shape(cute::Int<TileM_SFA>{}, cute::size<2>(TileShape{})));
+  // Flag for when M < 128 (padded SF layout doesn't match accumulator)
+  static constexpr bool IsCtaMSmall = cute::size<0>(TileShape{}) < 128;
+
+  // Scale factor B tile shape - N dimension padded to at least 128 for TMA
+  static constexpr int TileN_SFB = cute::ceil_div(cute::size<1>(TileShape{}), Blk_MN{}) * Blk_MN{};
+  using TileShape_SFB = decltype(cute::make_shape(cute::Int<TileN_SFB>{}, cute::size<2>(TileShape{})));
+  // Flag for when N < 128 (padded SF layout doesn't match accumulator)
+  static constexpr bool IsCtaNSmall = cute::size<1>(TileShape{}) < 128;
+
   // Gmem copies
   using GmemTiledCopyPairA = GmemTiledCopyPairA_;
   using GmemTiledCopyPairB = GmemTiledCopyPairB_;
@@ -313,7 +330,7 @@ struct CollectiveMma<
         GmemTiledCopySFA{},
         make_tensor(static_cast<ElementSF const*>(nullptr), InternalLayoutSFA{}),
         SmemLayoutSFA{}(_,_,cute::Int<0>{}),
-        make_shape(shape<0>(TileShape{}), shape<2>(TileShape{})),
+        make_shape(cute::Int<TileM_SFA>{}, shape<2>(TileShape{})),  // Padded M for TMA
         _1{}));  // No programmatic multicast
 
 
@@ -321,7 +338,7 @@ struct CollectiveMma<
         GmemTiledCopySFB{},
         make_tensor(static_cast<ElementSF const*>(nullptr), InternalLayoutSFB{}),
         SmemLayoutSFB{}(_,_,cute::Int<0>{}),
-        make_shape(shape<1>(TileShape{}), shape<2>(TileShape{})),
+        make_shape(cute::Int<TileN_SFB>{}, shape<2>(TileShape{})),  // Padded N for TMA
         _1{}));  // No programmatic multicast
 
     TMA_A tma_load_a;
@@ -410,14 +427,14 @@ struct CollectiveMma<
         GmemTiledCopySFA{},
         tensor_sfa,
         SmemLayoutSFA{}(_,_,cute::Int<0>{}),
-        make_shape(shape<0>(TileShape{}), shape<2>(TileShape{})),
+        make_shape(cute::Int<TileM_SFA>{}, shape<2>(TileShape{})),  // Padded M for TMA
         _1{}); // No programmatic multicast
 
     typename Params::TMA_SFB tma_load_sfb = make_tma_copy<uint16_t>(
         GmemTiledCopySFB{},
         tensor_sfb,
         SmemLayoutSFB{}(_,_,cute::Int<0>{}),
-        make_shape(shape<1>(TileShape{}), shape<2>(TileShape{})),
+        make_shape(cute::Int<TileN_SFB>{}, shape<2>(TileShape{})),  // Padded N for TMA
         _1{}); // No programmatic multicast
 
     return {
@@ -863,8 +880,8 @@ struct CollectiveMma<
 
     CUTE_STATIC_ASSERT_V(size<1>(tCsSFA) == size<1>(tCrSFA_copy_view));                    // CPY_M
     CUTE_STATIC_ASSERT_V(size<2>(tCsSFA) == size<2>(tCrSFA_copy_view));                    // CPY_K
-    CUTE_STATIC_ASSERT_V(size<1>(tCrSFA) == size<1>(accum));                               // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrSFB) == size<2>(accum));                               // MMA_N
+    if constexpr (!IsCtaMSmall) { CUTE_STATIC_ASSERT_V(size<1>(tCrSFA) == size<1>(accum)); }  // MMA_M (skip for padded SF)
+    if constexpr (!IsCtaNSmall) { CUTE_STATIC_ASSERT_V(size<1>(tCrSFB) == size<2>(accum)); }  // MMA_N (skip for padded SF)
     CUTE_STATIC_ASSERT_V(size<2>(tCsSFA) == size<2>(tCsSFB));                              // CPY_K
     CUTE_STATIC_ASSERT_V(size<3>(tCsSFA) == size<3>(tCsSFB));                              // PIPE
     CUTE_STATIC_ASSERT_V(size<2>(sA) == size<2>(sSFA));                                    // PIPE
