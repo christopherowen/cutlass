@@ -140,22 +140,38 @@ sm120_rr_smem_selector_sparse() {
   }
 }
 
-template <int SFVectorSize>
+template <int SFVectorSize, int TileN = 32>
 CUTLASS_HOST_DEVICE constexpr
 auto
 sm120_tile_n_permute_selector() {
-  // VS = 16
-  if constexpr (SFVectorSize == 16) {
-    // Permute in the N mode to allow a warp to own all the elements needed for SF reduction
+  // Permute in the N mode to allow a warp to own all the elements needed for SF reduction.
+  // The layout size must match the tile N dimension.
+  // MMA atom N = 8, so we tile atoms to reach the desired N.
+  //
+  // TileN >= 32: Original layout, tiles 4 atoms (8*4=32)
+  // TileN == 24: Tiles 3 atoms (8*3=24)
+  // TileN == 16: Tiles 2 atoms (8*2=16)
+  // TileN == 8:  Single atom (8*1=8)
+
+  if constexpr (TileN >= 32) {
+    // Original: Shape<_8,_2,_2> = 32 elements
     return cute::Layout<cute::Shape<_8,_2,_2>, cute::Stride<_1, _16,_8>>{};
   }
-  // VS = 32
-  else if constexpr (SFVectorSize == 32) {
-    return cute::Layout<cute::Shape<_8,_2,_2>, cute::Stride<_1, _16,_8>>{};
+  else if constexpr (TileN == 24) {
+    // Shape<_8,_3> = 24 elements (3 atoms)
+    return cute::Layout<cute::Shape<_8,_3>, cute::Stride<_1, _8>>{};
+  }
+  else if constexpr (TileN == 16) {
+    // Shape<_8,_2> = 16 elements (2 atoms)
+    return cute::Layout<cute::Shape<_8,_2>, cute::Stride<_1, _8>>{};
+  }
+  else if constexpr (TileN == 8) {
+    // Shape<_8> = 8 elements (1 atom)
+    return cute::Layout<cute::Shape<_8>, cute::Stride<_1>>{};
   }
   else {
-    static_assert(cutlass::detail::dependent_false<cute::C<SFVectorSize>>,
-      "Unsupported SFVectorSize for SM120 collective builder.");
+    static_assert(cutlass::detail::dependent_false<cute::C<TileN>>,
+      "Unsupported TileN for SM120 collective builder. Must be multiple of 8.");
   }
 }
 

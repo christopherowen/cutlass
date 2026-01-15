@@ -98,7 +98,8 @@ struct CollectiveBuilder<
   static_assert(cute::is_static_v<ClusterShape_MNK>, "Cluster has to be static");
   static_assert(detail::blockscaled::check_input_datatypes<BuilderScheduleTag, ElementPairA, ElementPairB, UmmaMajorA, UmmaMajorB>(), "Incorrect input types");
   static_assert(cute::size(ClusterShape_MNK{}) == Int<1>{}, "no programmatic multicast on this arch");
-  static_assert(size<1>(TileShape_MNK{}) >= 32, "Invalid tile shape N.");
+  static_assert(size<1>(TileShape_MNK{}) >= 8 && size<1>(TileShape_MNK{}) % 8 == 0,
+                "Tile N must be a multiple of 8 (MMA atom N dimension).");
 
   static constexpr auto Instr = detail::blockscaled::select_instr<ElementPairA,
                                                                   ElementPairB,
@@ -108,7 +109,8 @@ struct CollectiveBuilder<
                                                                   BuilderScheduleTag>();
   static constexpr bool UseMxf8f6f4 = Instr == detail::blockscaled::BlockScaledInstr::MXF4F6F8;
   using PermTileM = decltype(cute::min(size<0>(TileShape_MNK{}), _128{}));
-  using PermTileN = decltype(detail::sm120_tile_n_permute_selector<SFVectorSize>());
+  static constexpr int TileN = cute::size<1>(TileShape_MNK{});
+  using PermTileN = decltype(detail::sm120_tile_n_permute_selector<SFVectorSize, TileN>());
   using PermTileK = cute::conditional_t<(UseMxf8f6f4
                                         ), _32, _64>;
 
@@ -189,19 +191,19 @@ struct CollectiveBuilder<
   using kBasicBlockShape  = Shape<Int<SFVectorSize>, Int<MMA_NSF>>;
   using kBasicBlockStride = Stride<_0, _1>;
   
-  using sSFA_shapeM       = decltype(prepend(size<0>(TileShape_MNK{}) / Blk_MN{},   mnBasicBlockShape{}));
+  using sSFA_shapeM       = decltype(prepend(cute::ceil_div(size<0>(TileShape_MNK{}), Blk_MN{}),   mnBasicBlockShape{}));
   using sSF_strideMN      = decltype(prepend(                        Blk_Elems{},  mnBasicBlockStride{}));
   using sSFA_strideM      = sSF_strideMN;
   using sSF_shapeK        = decltype(prepend(make_shape( Blk_SF{}/Int<MMA_NSF>{},   size<2>(TileShape_MNK{}) / Int<SFVectorSize>{} / Blk_SF{}),  kBasicBlockShape{}));
   
-  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   size<0>(TileShape_MNK{}) / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   cute::ceil_div(size<0>(TileShape_MNK{}), Blk_MN{}) * Blk_Elems{}), kBasicBlockStride{}));
   using sSFA_shape        = decltype(make_shape(  sSFA_shapeM{},   sSF_shapeK{}));
   using sSFA_stride       = decltype(make_stride(sSFA_strideM{}, sSFA_strideK{}));
   using SmemLayoutAtomSFA = decltype(make_layout(  sSFA_shape{},  sSFA_stride{}));
 
-  using sSFB_shapeN       = decltype(prepend(size<1>(TileShape_MNK{}) / Blk_MN{},   mnBasicBlockShape{}));
+  using sSFB_shapeN       = decltype(prepend(cute::ceil_div(size<1>(TileShape_MNK{}), Blk_MN{}),   mnBasicBlockShape{}));
   using sSFB_strideN      = sSF_strideMN;
-  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   size<1>(TileShape_MNK{}) / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   cute::ceil_div(size<1>(TileShape_MNK{}), Blk_MN{}) * Blk_Elems{}), kBasicBlockStride{}));
   using sSFB_shape        = decltype(make_shape(  sSFB_shapeN{},   sSF_shapeK{}));
   using sSFB_stride       = decltype(make_stride(sSFB_strideN{}, sSFB_strideK{}));
   using SmemLayoutAtomSFB = decltype(make_layout(  sSFB_shape{},  sSFB_stride{}));
