@@ -143,8 +143,17 @@ struct CollectiveBuilder<
 
   static constexpr int MMA_NSF = size<2>(typename TiledMma::AtomShape_MNK{}) / SFVectorSize;
 
+  // For MXF8F6F4 mode:
+  // - SmemLayoutTypeB = FP4 for correct shared memory layout sizing
+  // - SmemCopyTypeB = uint8 because SM100_SU4_DU8 produces 8-bit register outputs
+  //   that the MMA consumes. The copy instruction handles 4→8 bit expansion internally.
+  // 
+  // Note: partition_S uses the tensor's actual layout (FP4), and the copy instruction
+  // (ldmatrix.b4x16) correctly reads 4-bit values. The uint8 ValType matches the
+  // register output format expected by make_tiled_copy_B.
   using SmemAllocTypeA = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeA>;
-  using SmemAllocTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
+  using SmemCopyTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
+  using SmemLayoutTypeB = cute::conditional_t<UseMxf8f6f4, ElementB, typename TiledMma::ValTypeB>;
   using SmemAllocTypeSF = ElementSF;
 
   using GmemTiledCopyA = SM90_TMA_LOAD;
@@ -159,9 +168,11 @@ struct CollectiveBuilder<
   // Setup Config
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVectorSize>;
 
+  // Use SmemLayoutTypeB (FP4) for layout - gives correct element count and allocation size
   using SmemLayoutAtomA = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeA, decltype(size<2>(TileShape_MNK{}))>());
-  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
+  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemLayoutTypeB, decltype(size<2>(TileShape_MNK{}))>());
 
+  // Use SmemCopyTypeB (uint8) for copy atom - required for SU4_DU8 instruction compatibility
   using SmemCopyAtomA = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_A<ElementA,
                                                                                  ElementB,
                                                                                  UseMxf8f6f4
@@ -170,7 +181,7 @@ struct CollectiveBuilder<
                                                                                  ElementB,
                                                                                  UseMxf8f6f4,
                                                                                  TileN
-                                                                                >()), SmemAllocTypeB>;
+                                                                                >()), SmemCopyTypeB>;
 
   using SmemCopyAtomSF = Copy_Atom<UniversalCopy<SmemAllocTypeSF>, SmemAllocTypeSF>; // auto-vectorized LDS
   using SmemCopyAtomSFA = SmemCopyAtomSF;
@@ -217,8 +228,9 @@ struct CollectiveBuilder<
   using SmemLayoutAtomsA = decltype(cute::make_tuple(SmemLayoutAtomA{}, SmemLayoutAtomSFA{}));
   using SmemLayoutAtomsB = decltype(cute::make_tuple(SmemLayoutAtomB{}, SmemLayoutAtomSFB{}));
 
+  // Use SmemLayoutTypeB (actual FP4 type) for stage calculation - gives correct byte count
   static constexpr int PipelineStages = cutlass::gemm::collective::detail::sm100_compute_stage_count_or_override_blockscaled<
-    detail::sm120_smem_capacity_bytes, SmemAllocTypeA, SmemAllocTypeB, TileShape_MNK, SmemLayoutAtomSFA, SmemLayoutAtomSFB>(StageCountType{});
+    detail::sm120_smem_capacity_bytes, SmemAllocTypeA, SmemLayoutTypeB, TileShape_MNK, SmemLayoutAtomSFA, SmemLayoutAtomSFB>(StageCountType{});
 
   static constexpr uint32_t SchedulerPipelineStageCount = 3;
 
