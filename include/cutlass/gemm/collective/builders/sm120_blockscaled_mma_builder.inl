@@ -168,7 +168,8 @@ struct CollectiveBuilder<
                                                                                  >()), SmemAllocTypeA>;
   using SmemCopyAtomB = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_B<ElementA,
                                                                                  ElementB,
-                                                                                 UseMxf8f6f4
+                                                                                 UseMxf8f6f4,
+                                                                                 TileN
                                                                                 >()), SmemAllocTypeB>;
 
   using SmemCopyAtomSF = Copy_Atom<UniversalCopy<SmemAllocTypeSF>, SmemAllocTypeSF>; // auto-vectorized LDS
@@ -191,19 +192,24 @@ struct CollectiveBuilder<
   using kBasicBlockShape  = Shape<Int<SFVectorSize>, Int<MMA_NSF>>;
   using kBasicBlockStride = Stride<_0, _1>;
   
-  using sSFA_shapeM       = decltype(prepend(cute::ceil_div(size<0>(TileShape_MNK{}), Blk_MN{}),   mnBasicBlockShape{}));
+  // M dimension must be rounded up to at least Blk_MN (128) for TMA to work.
+  static constexpr int TileM_SFA = cute::ceil_div(cute::size<0>(TileShape_MNK{}), Blk_MN{}) * Blk_MN{};
+  using sSFA_shapeM       = decltype(prepend(Int<TileM_SFA>{} / Blk_MN{},   mnBasicBlockShape{}));
   using sSF_strideMN      = decltype(prepend(                        Blk_Elems{},  mnBasicBlockStride{}));
   using sSFA_strideM      = sSF_strideMN;
   using sSF_shapeK        = decltype(prepend(make_shape( Blk_SF{}/Int<MMA_NSF>{},   size<2>(TileShape_MNK{}) / Int<SFVectorSize>{} / Blk_SF{}),  kBasicBlockShape{}));
   
-  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   cute::ceil_div(size<0>(TileShape_MNK{}), Blk_MN{}) * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   Int<TileM_SFA>{} / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
   using sSFA_shape        = decltype(make_shape(  sSFA_shapeM{},   sSF_shapeK{}));
   using sSFA_stride       = decltype(make_stride(sSFA_strideM{}, sSFA_strideK{}));
   using SmemLayoutAtomSFA = decltype(make_layout(  sSFA_shape{},  sSFA_stride{}));
 
-  using sSFB_shapeN       = decltype(prepend(cute::ceil_div(size<1>(TileShape_MNK{}), Blk_MN{}),   mnBasicBlockShape{}));
+  // N dimension must be rounded up to at least Blk_MN (128) for TMA and UTCCP to work.
+  // This matches the ceil_div logic in Sm1xxBlockScaledConfig::deduce_smem_layoutSFB.
+  static constexpr int TileN_SFB = cute::ceil_div(cute::size<1>(TileShape_MNK{}), Blk_MN{}) * Blk_MN{};
+  using sSFB_shapeN       = decltype(prepend(Int<TileN_SFB>{} / Blk_MN{},   mnBasicBlockShape{}));
   using sSFB_strideN      = sSF_strideMN;
-  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   cute::ceil_div(size<1>(TileShape_MNK{}), Blk_MN{}) * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   Int<TileN_SFB>{} / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
   using sSFB_shape        = decltype(make_shape(  sSFB_shapeN{},   sSF_shapeK{}));
   using sSFB_stride       = decltype(make_stride(sSFB_strideN{}, sSFB_strideK{}));
   using SmemLayoutAtomSFB = decltype(make_layout(  sSFB_shape{},  sSFB_stride{}));

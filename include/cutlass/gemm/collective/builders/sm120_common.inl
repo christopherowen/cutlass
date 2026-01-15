@@ -70,27 +70,66 @@ sm120_rr_smem_copy_selector_A() {
 }
 
 // Helper for selecting the shared memory copy atom to use for operand B
+// The TileN parameter allows selecting appropriate copy atoms based on divisibility.
+// x4 variants require TileN divisible by 32, x2 by 16, x1 by 8.
 template <
   class ElementA,
   class ElementB,
-  bool UseF8f6f4
+  bool UseF8f6f4,
+  int TileN = 128
 >
 CUTLASS_HOST_DEVICE constexpr
 auto
 sm120_rr_smem_copy_selector_B() {
   if constexpr (UseF8f6f4) {
     if constexpr (sizeof_bits_v<ElementB> == 6) {
-      return SM100_SU6_DU8x16_x4_LDSM_N{};
+      // FP6: select based on TileN divisibility
+      if constexpr (TileN % 32 == 0) {
+        return SM100_SU6_DU8x16_x4_LDSM_N{};
+      }
+      else if constexpr (TileN % 16 == 0) {
+        return SM100_SU6_DU8x16_x2_LDSM_N{};
+      }
+      else {
+        return SM100_SU6_DU8x16_x1_LDSM_N{};
+      }
     }
     else if constexpr (sizeof_bits_v<ElementB> == 4) {
-      return SM100_SU4_DU8x16_x4_LDSM_N{};
+      // FP4: select based on TileN divisibility
+      if constexpr (TileN % 32 == 0) {
+        return SM100_SU4_DU8x16_x4_LDSM_N{};
+      }
+      else if constexpr (TileN % 16 == 0) {
+        return SM100_SU4_DU8x16_x2_LDSM_N{};
+      }
+      else {
+        return SM100_SU4_DU8x16_x1_LDSM_N{};
+      }
     }
     else {
-      return SM75_U32x4_LDSM_N{};
+      // FP8: use standard ldmatrix variants
+      if constexpr (TileN % 32 == 0) {
+        return SM75_U32x4_LDSM_N{};
+      }
+      else if constexpr (TileN % 16 == 0) {
+        return SM75_U32x2_LDSM_N{};
+      }
+      else {
+        return SM75_U32x1_LDSM_N{};
+      }
     }
   } 
   else {
-    return SM75_U32x4_LDSM_N{};
+    // Non-F8F6F4: use standard ldmatrix variants
+    if constexpr (TileN % 32 == 0) {
+      return SM75_U32x4_LDSM_N{};
+    }
+    else if constexpr (TileN % 16 == 0) {
+      return SM75_U32x2_LDSM_N{};
+    }
+    else {
+      return SM75_U32x1_LDSM_N{};
+    }
   }
 }
 
