@@ -143,17 +143,19 @@ struct CollectiveBuilder<
 
   static constexpr int MMA_NSF = size<2>(typename TiledMma::AtomShape_MNK{}) / SFVectorSize;
 
-  // For MXF8F6F4 mode:
-  // - SmemLayoutTypeB = FP4 for correct shared memory layout sizing
-  // - SmemCopyTypeB = uint8 because SM100_SU4_DU8 produces 8-bit register outputs
-  //   that the MMA consumes. The copy instruction handles 4→8 bit expansion internally.
+  // For MXF8F6F4 mode with FP4 weights:
+  // Both SmemLayoutTypeB and SmemCopyTypeB use uint8_t (matching SM100 approach).
+  // This is necessary because:
+  // 1. The ldmatrix.b4x16 instruction expects byte-aligned addresses
+  // 2. The Copy_Atom's ValType must match the MMA's ValTypeB (uint8)
+  // 3. CUTE's Copy_Atom uses single ValType for both source and destination
   // 
-  // Note: partition_S uses the tensor's actual layout (FP4), and the copy instruction
-  // (ldmatrix.b4x16) correctly reads 4-bit values. The uint8 ValType matches the
-  // register output format expected by make_tiled_copy_B.
+  // Trade-off: This allocates 2× the memory needed (uint8 for FP4 data),
+  // but TMA only writes the actual FP4 bytes to the first half. The second
+  // half remains unused but the addressing works correctly.
   using SmemAllocTypeA = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeA>;
   using SmemCopyTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
-  using SmemLayoutTypeB = cute::conditional_t<UseMxf8f6f4, ElementB, typename TiledMma::ValTypeB>;
+  using SmemLayoutTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
   using SmemAllocTypeSF = ElementSF;
 
   using GmemTiledCopyA = SM90_TMA_LOAD;
@@ -172,7 +174,7 @@ struct CollectiveBuilder<
   using SmemLayoutAtomA = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeA, decltype(size<2>(TileShape_MNK{}))>());
   using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemLayoutTypeB, decltype(size<2>(TileShape_MNK{}))>());
 
-  // Use SmemCopyTypeB (uint8) for copy atom - required for SU4_DU8 instruction compatibility
+  // SmemCopyTypeB (uint8) matches MMA's ValTypeB for correct register format
   using SmemCopyAtomA = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_A<ElementA,
                                                                                  ElementB,
                                                                                  UseMxf8f6f4
