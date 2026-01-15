@@ -258,8 +258,10 @@ struct CollectiveMma<
                                                 cutlass::detail::float_e3m2_unpacksmem_t,
                                                 uint_bit_t<sizeof_bits_v<ElementB>>>>>>;
 
+  // For MXF8F6F4 mode, use actual element types for ArrayEngine allocation.
+  // This allows array_subbyte to correctly pack FP4 elements (2 per byte).
   using SmemAllocTypeA = cute::conditional_t<IsF8F6F4, uint8_t, typename TiledMma::ValTypeA>;
-  using SmemAllocTypeB = cute::conditional_t<IsF8F6F4, uint8_t, typename TiledMma::ValTypeB>;
+  using SmemAllocTypeB = cute::conditional_t<IsF8F6F4, ElementB, typename TiledMma::ValTypeB>;
 
   // Set the bytes transferred in this TMA transaction (may involve multiple issues)
   static constexpr uint32_t TmaTransactionBytesMK = static_cast<uint32_t>(
