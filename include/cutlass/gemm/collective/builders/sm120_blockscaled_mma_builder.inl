@@ -98,8 +98,7 @@ struct CollectiveBuilder<
   static_assert(cute::is_static_v<ClusterShape_MNK>, "Cluster has to be static");
   static_assert(detail::blockscaled::check_input_datatypes<BuilderScheduleTag, ElementPairA, ElementPairB, UmmaMajorA, UmmaMajorB>(), "Incorrect input types");
   static_assert(cute::size(ClusterShape_MNK{}) == Int<1>{}, "no programmatic multicast on this arch");
-  static_assert(size<1>(TileShape_MNK{}) >= 8 && size<1>(TileShape_MNK{}) % 8 == 0,
-                "Tile N must be a multiple of 8 (MMA atom N dimension).");
+  static_assert(size<1>(TileShape_MNK{}) >= 32, "Invalid tile shape N.");
 
   static constexpr auto Instr = detail::blockscaled::select_instr<ElementPairA,
                                                                   ElementPairB,
@@ -109,8 +108,7 @@ struct CollectiveBuilder<
                                                                   BuilderScheduleTag>();
   static constexpr bool UseMxf8f6f4 = Instr == detail::blockscaled::BlockScaledInstr::MXF4F6F8;
   using PermTileM = decltype(cute::min(size<0>(TileShape_MNK{}), _128{}));
-  static constexpr int TileN = cute::size<1>(TileShape_MNK{});
-  using PermTileN = decltype(detail::sm120_tile_n_permute_selector<SFVectorSize, TileN>());
+  using PermTileN = decltype(detail::sm120_tile_n_permute_selector<SFVectorSize>());
   using PermTileK = cute::conditional_t<(UseMxf8f6f4
                                         ), _32, _64>;
 
@@ -143,19 +141,8 @@ struct CollectiveBuilder<
 
   static constexpr int MMA_NSF = size<2>(typename TiledMma::AtomShape_MNK{}) / SFVectorSize;
 
-  // For MXF8F6F4 mode with FP4 weights:
-  // Both SmemLayoutTypeB and SmemCopyTypeB use uint8_t (matching SM100 approach).
-  // This is necessary because:
-  // 1. The ldmatrix.b4x16 instruction expects byte-aligned addresses
-  // 2. The Copy_Atom's ValType must match the MMA's ValTypeB (uint8)
-  // 3. CUTE's Copy_Atom uses single ValType for both source and destination
-  // 
-  // Trade-off: This allocates 2× the memory needed (uint8 for FP4 data),
-  // but TMA only writes the actual FP4 bytes to the first half. The second
-  // half remains unused but the addressing works correctly.
   using SmemAllocTypeA = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeA>;
-  using SmemCopyTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
-  using SmemLayoutTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
+  using SmemAllocTypeB = cute::conditional_t<UseMxf8f6f4, uint8_t, typename TiledMma::ValTypeB>;
   using SmemAllocTypeSF = ElementSF;
 
   using GmemTiledCopyA = SM90_TMA_LOAD;
@@ -170,20 +157,17 @@ struct CollectiveBuilder<
   // Setup Config
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVectorSize>;
 
-  // Use SmemLayoutTypeB (FP4) for layout - gives correct element count and allocation size
   using SmemLayoutAtomA = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeA, decltype(size<2>(TileShape_MNK{}))>());
-  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemLayoutTypeB, decltype(size<2>(TileShape_MNK{}))>());
+  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
 
-  // SmemCopyTypeB (uint8) matches MMA's ValTypeB for correct register format
   using SmemCopyAtomA = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_A<ElementA,
                                                                                  ElementB,
                                                                                  UseMxf8f6f4
                                                                                  >()), SmemAllocTypeA>;
   using SmemCopyAtomB = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_B<ElementA,
                                                                                  ElementB,
-                                                                                 UseMxf8f6f4,
-                                                                                 TileN
-                                                                                >()), SmemCopyTypeB>;
+                                                                                 UseMxf8f6f4
+                                                                                >()), SmemAllocTypeB>;
 
   using SmemCopyAtomSF = Copy_Atom<UniversalCopy<SmemAllocTypeSF>, SmemAllocTypeSF>; // auto-vectorized LDS
   using SmemCopyAtomSFA = SmemCopyAtomSF;
@@ -205,24 +189,19 @@ struct CollectiveBuilder<
   using kBasicBlockShape  = Shape<Int<SFVectorSize>, Int<MMA_NSF>>;
   using kBasicBlockStride = Stride<_0, _1>;
   
-  // M dimension must be rounded up to at least Blk_MN (128) for TMA to work.
-  static constexpr int TileM_SFA = cute::ceil_div(cute::size<0>(TileShape_MNK{}), Blk_MN{}) * Blk_MN{};
-  using sSFA_shapeM       = decltype(prepend(Int<TileM_SFA>{} / Blk_MN{},   mnBasicBlockShape{}));
+  using sSFA_shapeM       = decltype(prepend(size<0>(TileShape_MNK{}) / Blk_MN{},   mnBasicBlockShape{}));
   using sSF_strideMN      = decltype(prepend(                        Blk_Elems{},  mnBasicBlockStride{}));
   using sSFA_strideM      = sSF_strideMN;
   using sSF_shapeK        = decltype(prepend(make_shape( Blk_SF{}/Int<MMA_NSF>{},   size<2>(TileShape_MNK{}) / Int<SFVectorSize>{} / Blk_SF{}),  kBasicBlockShape{}));
   
-  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   Int<TileM_SFA>{} / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFA_strideK      = decltype(prepend(make_stride(         Int<MMA_NSF>{},   size<0>(TileShape_MNK{}) / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
   using sSFA_shape        = decltype(make_shape(  sSFA_shapeM{},   sSF_shapeK{}));
   using sSFA_stride       = decltype(make_stride(sSFA_strideM{}, sSFA_strideK{}));
   using SmemLayoutAtomSFA = decltype(make_layout(  sSFA_shape{},  sSFA_stride{}));
 
-  // N dimension must be rounded up to at least Blk_MN (128) for TMA and UTCCP to work.
-  // This matches the ceil_div logic in Sm1xxBlockScaledConfig::deduce_smem_layoutSFB.
-  static constexpr int TileN_SFB = cute::ceil_div(cute::size<1>(TileShape_MNK{}), Blk_MN{}) * Blk_MN{};
-  using sSFB_shapeN       = decltype(prepend(Int<TileN_SFB>{} / Blk_MN{},   mnBasicBlockShape{}));
+  using sSFB_shapeN       = decltype(prepend(size<1>(TileShape_MNK{}) / Blk_MN{},   mnBasicBlockShape{}));
   using sSFB_strideN      = sSF_strideMN;
-  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   Int<TileN_SFB>{} / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   size<1>(TileShape_MNK{}) / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
   using sSFB_shape        = decltype(make_shape(  sSFB_shapeN{},   sSF_shapeK{}));
   using sSFB_stride       = decltype(make_stride(sSFB_strideN{}, sSFB_strideK{}));
   using SmemLayoutAtomSFB = decltype(make_layout(  sSFB_shape{},  sSFB_stride{}));
@@ -230,9 +209,8 @@ struct CollectiveBuilder<
   using SmemLayoutAtomsA = decltype(cute::make_tuple(SmemLayoutAtomA{}, SmemLayoutAtomSFA{}));
   using SmemLayoutAtomsB = decltype(cute::make_tuple(SmemLayoutAtomB{}, SmemLayoutAtomSFB{}));
 
-  // Use SmemLayoutTypeB (actual FP4 type) for stage calculation - gives correct byte count
   static constexpr int PipelineStages = cutlass::gemm::collective::detail::sm100_compute_stage_count_or_override_blockscaled<
-    detail::sm120_smem_capacity_bytes, SmemAllocTypeA, SmemLayoutTypeB, TileShape_MNK, SmemLayoutAtomSFA, SmemLayoutAtomSFB>(StageCountType{});
+    detail::sm120_smem_capacity_bytes, SmemAllocTypeA, SmemAllocTypeB, TileShape_MNK, SmemLayoutAtomSFA, SmemLayoutAtomSFB>(StageCountType{});
 
   static constexpr uint32_t SchedulerPipelineStageCount = 3;
 

@@ -38,36 +38,16 @@ namespace cutlass::epilogue::collective::detail {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Selects the largest vectorized smem store atom available
-// EpiN parameter allows selecting smaller atoms for small epilogue tiles
-template <class GmemStrideTypeD, class ElementD, int EpiN = 64>
+template <class GmemStrideTypeD, class ElementD>
 constexpr auto
 sm120_get_smem_store_op_for_accumulator() {
   using namespace cute;
 
   if constexpr (sizeof(ElementD) == 2 && size<0>(GmemStrideTypeD{}) == 1) {
-    // M-major (ColMajor D)
-    if constexpr (EpiN >= 32) {
-      return SM90_U16x4_STSM_T{};
-    } else {
-      // Small EpiN: use auto-vectorizing to avoid layout conflicts
-      return AutoVectorizingCopyWithAssumedAlignment{};
-    }
+    return SM90_U16x4_STSM_T{};
   }
   else if constexpr (sizeof(ElementD) == 2 && size<1>(GmemStrideTypeD{}) == 1) {
-    // N-major (RowMajor D)
-    // stmatrix.xN stores N 8x8 tiles, so:
-    //   - SM90_U32x2_STSM_N: 2x 8x8 = 16 elements in N, requires EpiN >= 32 for swizzle compat
-    //   - SM90_U32x1_STSM_N: 1x 8x8 = 8 elements in N, requires EpiN >= 16 for swizzle compat
-    // Note: EpiN=8 causes "ambiguous scatter" even with x1 due to smem layout conflicts
-    if constexpr (EpiN >= 32) {
-      return SM90_U32x2_STSM_N{};
-    } else if constexpr (EpiN >= 16) {
-      return SM90_U32x1_STSM_N{};
-    } else {
-      // EpiN < 16: smem swizzle pattern incompatible with stmatrix
-      // AutoVectorizingCopy is slower but always works
-      return AutoVectorizingCopyWithAssumedAlignment{};
-    }
+    return SM90_U32x2_STSM_N{};
   }
   else {
     // auto-vectorizing store
