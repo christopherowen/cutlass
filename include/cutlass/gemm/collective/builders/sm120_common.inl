@@ -70,66 +70,27 @@ sm120_rr_smem_copy_selector_A() {
 }
 
 // Helper for selecting the shared memory copy atom to use for operand B
-// The TileN parameter allows selecting appropriate copy atoms based on divisibility.
-// x4 variants require TileN divisible by 32, x2 by 16, x1 by 8.
 template <
   class ElementA,
   class ElementB,
-  bool UseF8f6f4,
-  int TileN = 128
+  bool UseF8f6f4
 >
 CUTLASS_HOST_DEVICE constexpr
 auto
 sm120_rr_smem_copy_selector_B() {
   if constexpr (UseF8f6f4) {
     if constexpr (sizeof_bits_v<ElementB> == 6) {
-      // FP6: select based on TileN divisibility
-      if constexpr (TileN % 32 == 0) {
-        return SM100_SU6_DU8x16_x4_LDSM_N{};
-      }
-      else if constexpr (TileN % 16 == 0) {
-        return SM100_SU6_DU8x16_x2_LDSM_N{};
-      }
-      else {
-        return SM100_SU6_DU8x16_x1_LDSM_N{};
-      }
+      return SM100_SU6_DU8x16_x4_LDSM_N{};
     }
     else if constexpr (sizeof_bits_v<ElementB> == 4) {
-      // FP4: select based on TileN divisibility
-      if constexpr (TileN % 32 == 0) {
-        return SM100_SU4_DU8x16_x4_LDSM_N{};
-      }
-      else if constexpr (TileN % 16 == 0) {
-        return SM100_SU4_DU8x16_x2_LDSM_N{};
-      }
-      else {
-        return SM100_SU4_DU8x16_x1_LDSM_N{};
-      }
+      return SM100_SU4_DU8x16_x4_LDSM_N{};
     }
     else {
-      // FP8: use standard ldmatrix variants
-      if constexpr (TileN % 32 == 0) {
-        return SM75_U32x4_LDSM_N{};
-      }
-      else if constexpr (TileN % 16 == 0) {
-        return SM75_U32x2_LDSM_N{};
-      }
-      else {
-        return SM75_U32x1_LDSM_N{};
-      }
+      return SM75_U32x4_LDSM_N{};
     }
   } 
   else {
-    // Non-F8F6F4: use standard ldmatrix variants
-    if constexpr (TileN % 32 == 0) {
-      return SM75_U32x4_LDSM_N{};
-    }
-    else if constexpr (TileN % 16 == 0) {
-      return SM75_U32x2_LDSM_N{};
-    }
-    else {
-      return SM75_U32x1_LDSM_N{};
-    }
+    return SM75_U32x4_LDSM_N{};
   }
 }
 
@@ -179,38 +140,22 @@ sm120_rr_smem_selector_sparse() {
   }
 }
 
-template <int SFVectorSize, int TileN = 32>
+template <int SFVectorSize>
 CUTLASS_HOST_DEVICE constexpr
 auto
 sm120_tile_n_permute_selector() {
-  // Permute in the N mode to allow a warp to own all the elements needed for SF reduction.
-  // The layout size must match the tile N dimension.
-  // MMA atom N = 8, so we tile atoms to reach the desired N.
-  //
-  // TileN >= 32: Original layout, tiles 4 atoms (8*4=32)
-  // TileN == 24: Tiles 3 atoms (8*3=24)
-  // TileN == 16: Tiles 2 atoms (8*2=16)
-  // TileN == 8:  Single atom (8*1=8)
-
-  if constexpr (TileN >= 32) {
-    // Original: Shape<_8,_2,_2> = 32 elements
+  // VS = 16
+  if constexpr (SFVectorSize == 16) {
+    // Permute in the N mode to allow a warp to own all the elements needed for SF reduction
     return cute::Layout<cute::Shape<_8,_2,_2>, cute::Stride<_1, _16,_8>>{};
   }
-  else if constexpr (TileN == 24) {
-    // Shape<_8,_3> = 24 elements (3 atoms)
-    return cute::Layout<cute::Shape<_8,_3>, cute::Stride<_1, _8>>{};
-  }
-  else if constexpr (TileN == 16) {
-    // Shape<_8,_2> = 16 elements (2 atoms)
-    return cute::Layout<cute::Shape<_8,_2>, cute::Stride<_1, _8>>{};
-  }
-  else if constexpr (TileN == 8) {
-    // Shape<_8> = 8 elements (1 atom)
-    return cute::Layout<cute::Shape<_8>, cute::Stride<_1>>{};
+  // VS = 32
+  else if constexpr (SFVectorSize == 32) {
+    return cute::Layout<cute::Shape<_8,_2,_2>, cute::Stride<_1, _16,_8>>{};
   }
   else {
-    static_assert(cutlass::detail::dependent_false<cute::C<TileN>>,
-      "Unsupported TileN for SM120 collective builder. Must be multiple of 8.");
+    static_assert(cutlass::detail::dependent_false<cute::C<SFVectorSize>>,
+      "Unsupported SFVectorSize for SM120 collective builder.");
   }
 }
 
