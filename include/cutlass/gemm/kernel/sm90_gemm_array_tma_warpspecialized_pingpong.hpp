@@ -491,6 +491,59 @@ public:
 
     // Note: Tma Descriptor Prefetch (from either const or param) is not applicable here
 
+#if defined(FLASHINFER_TENSORMAP_INIT_ONLY)
+    // Debug-only: initialize+commit the CTA tensormap descriptors, then exit the kernel
+    // before any mainloop TMA loads execute.
+    //
+    // Rationale:
+    // - The failing (128,16) tile traps on a UTMALDG.4D (tensormap usage).
+    // - This mode isolates the tensormap init/update/commit sequence from the rest of GEMM.
+    // - We write a small canary into the last 32-bit word of each descriptor (A/B/SFA/SFB)
+    //   so host-side dumps can confirm whether we reached each phase without changing
+    //   the descriptor header fields.
+    if (warp_group_role == WarpGroupRole::Producer &&
+        producer_warp_role == ProducerWarpRole::Mainloop) {
+      int32_t const sm_idx = blockIdx.x + (blockIdx.y * gridDim.x);
+      int32_t const sm_count = params.hw_info.sm_count;
+      auto const problem_shape_MNKL_init =
+          append<4>(params.problem_shape.get_problem_shape(/*group_idx=*/0), 1);
+
+      auto input_tensormaps = collective_mainloop.tensormaps_init(
+          params.mainloop, shared_storage.tensormaps.mainloop, sm_count, sm_idx);
+
+      if (lane_predicate) {
+        // Canary before replace/commit
+        reinterpret_cast<uint32_t*>(get<0>(input_tensormaps))[31] = 0xA11A0000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<1>(input_tensormaps))[31] = 0xB11B0000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<2>(input_tensormaps))[31] = 0x51150000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<3>(input_tensormaps))[31] = 0x51160000u | uint32_t(sm_idx & 0xFFFF);
+      }
+      __syncwarp();
+
+      collective_mainloop.tensormaps_perform_update(
+          shared_storage.tensormaps.mainloop,
+          params.mainloop,
+          input_tensormaps,
+          problem_shape_MNKL_init,
+          /*next_batch=*/0);
+      __syncwarp();
+
+      collective_mainloop.tensormaps_cp_fence_release(
+          shared_storage.tensormaps.mainloop, input_tensormaps);
+      __syncwarp();
+
+      if (lane_predicate) {
+        // Canary after commit/fence-release
+        reinterpret_cast<uint32_t*>(get<0>(input_tensormaps))[31] = 0xA22A0000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<1>(input_tensormaps))[31] = 0xB22B0000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<2>(input_tensormaps))[31] = 0x52250000u | uint32_t(sm_idx & 0xFFFF);
+        reinterpret_cast<uint32_t*>(get<3>(input_tensormaps))[31] = 0x52260000u | uint32_t(sm_idx & 0xFFFF);
+      }
+    }
+    __syncthreads();
+    return;
+#endif
+
     // TileScheduler pipeline
     using TileSchedulerPipeline = typename TileScheduler::Pipeline;
     typename TileSchedulerPipeline::Params tile_scheduler_pipeline_params;
