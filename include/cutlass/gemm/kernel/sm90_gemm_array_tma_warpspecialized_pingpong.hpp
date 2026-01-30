@@ -739,6 +739,19 @@ public:
         // Entire warp must do this (i.e. it's aligned)
         collective_mainloop.tensormaps_cp_fence_release(shared_storage.tensormaps.mainloop, input_tensormaps);
 
+#if defined(FLASHINFER_TENSORMAP_CANARY)
+        // Debug-only: write a canary after tensormap commit, before any TMA loads.
+        // Use the last 32-bit word of each descriptor (128B total) to minimize interference
+        // with descriptor header fields.
+        if (lane_predicate) {
+          reinterpret_cast<uint32_t*>(get<0>(input_tensormaps))[31] = 0xCA0A0000u | uint32_t(curr_batch & 0xFFFF);
+          reinterpret_cast<uint32_t*>(get<1>(input_tensormaps))[31] = 0xCB0B0000u | uint32_t(curr_batch & 0xFFFF);
+          reinterpret_cast<uint32_t*>(get<2>(input_tensormaps))[31] = 0xC5FA0000u | uint32_t(curr_batch & 0xFFFF);
+          reinterpret_cast<uint32_t*>(get<3>(input_tensormaps))[31] = 0xC5FB0000u | uint32_t(curr_batch & 0xFFFF);
+        }
+        __syncwarp();
+#endif
+
         bool do_load_order_arrive = true;
         bool did_batch_change = true;
         do {
