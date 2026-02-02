@@ -45,6 +45,13 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Debug-only: allow kernels to log pipeline barrier state right before a wait.
+// Storage is defined by the FlashInfer SM120 fused-MoE JIT module when
+// nvcc defines `FLASHINFER_SM90_PIPELINE_DEBUG`.
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+extern "C" __device__ __managed__ volatile unsigned long long flashinfer_sm90_pipeline_dbg[512];
+#endif
+
 namespace cutlass {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -510,6 +517,35 @@ private:
 
   CUTLASS_DEVICE
   void producer_acquire(uint32_t stage, uint32_t phase) {
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+    // Record barrier pointers and parameters before the wait (the wait itself may trap).
+    if ((threadIdx.x & 31) == 0) {
+      int const b = int(blockIdx.x);
+      int const base = (b & 63) * 8;
+      // [0] magic tag
+      ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x504950454C494E45ull;  // "PIPELINE"
+      // [1] stage|phase|tx_bytes (packed)
+      ::flashinfer_sm90_pipeline_dbg[base + 1] =
+          (static_cast<unsigned long long>(stage) & 0xFFull) |
+          ((static_cast<unsigned long long>(phase) & 0xFFull) << 8) |
+          ((static_cast<unsigned long long>(params_.transaction_bytes) & 0xFFFFFFFFull) << 16);
+      // [2]/[3] base pointers
+      ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)empty_barrier_ptr_;
+      ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)full_barrier_ptr_;
+      // [4]/[5] stage pointers
+      ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+      ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&full_barrier_ptr_[stage]);
+      // [6] dst_blockid_ and role
+      ::flashinfer_sm90_pipeline_dbg[base + 6] =
+          (static_cast<unsigned long long>(dst_blockid_) & 0xFFFFFFFFull) |
+          ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+      // [7] is_leader + threadIdx.x
+      ::flashinfer_sm90_pipeline_dbg[base + 7] =
+          (static_cast<unsigned long long>(params_.is_leader) & 1ull) |
+          ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+      __threadfence();
+    }
+#endif
     empty_barrier_ptr_[stage].wait(phase);
 
     if (params_.is_leader) {
@@ -531,6 +567,28 @@ private:
   void producer_acquire(uint32_t stage, uint32_t phase, ProducerToken barrier_token) {
     detail::pipeline_check_is_producer(params_.role);
     if (barrier_token != BarrierStatus::WaitDone) {
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+      if ((threadIdx.x & 31) == 0) {
+        int const b = int(blockIdx.x);
+        int const base = (b & 63) * 8;
+        ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x504950454C494E45ull;  // "PIPELINE"
+        ::flashinfer_sm90_pipeline_dbg[base + 1] =
+            (static_cast<unsigned long long>(stage) & 0xFFull) |
+            ((static_cast<unsigned long long>(phase) & 0xFFull) << 8) |
+            ((static_cast<unsigned long long>(params_.transaction_bytes) & 0xFFFFFFFFull) << 16);
+        ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)empty_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)full_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&full_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 6] =
+            (static_cast<unsigned long long>(dst_blockid_) & 0xFFFFFFFFull) |
+            ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+        ::flashinfer_sm90_pipeline_dbg[base + 7] =
+            (static_cast<unsigned long long>(params_.is_leader) & 1ull) |
+            ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+        __threadfence();
+      }
+#endif
       empty_barrier_ptr_[stage].wait(phase);
     }
 
@@ -610,6 +668,35 @@ private:
   CUTLASS_DEVICE
   void consumer_wait(uint32_t stage, uint32_t phase) {
     detail::pipeline_check_is_consumer(params_.role);
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+    // Record barrier pointers and parameters before the wait (the wait itself may trap).
+    if ((threadIdx.x & 31) == 0) {
+      int const b = int(blockIdx.x);
+      int const base = (b & 63) * 8;
+      // [0] magic tag
+      ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x434F4E53554D4552ull;  // "CONSUMER"
+      // [1] stage|phase|tx_bytes (packed)
+      ::flashinfer_sm90_pipeline_dbg[base + 1] =
+          (static_cast<unsigned long long>(stage) & 0xFFull) |
+          ((static_cast<unsigned long long>(phase) & 0xFFull) << 8) |
+          ((static_cast<unsigned long long>(params_.transaction_bytes) & 0xFFFFFFFFull) << 16);
+      // [2]/[3] base pointers (full/empty)
+      ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)full_barrier_ptr_;
+      ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)empty_barrier_ptr_;
+      // [4]/[5] stage pointers (full/empty)
+      ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&full_barrier_ptr_[stage]);
+      ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+      // [6] dst_blockid_ and role
+      ::flashinfer_sm90_pipeline_dbg[base + 6] =
+          (static_cast<unsigned long long>(dst_blockid_) & 0xFFFFFFFFull) |
+          ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+      // [7] is_leader + threadIdx.x
+      ::flashinfer_sm90_pipeline_dbg[base + 7] =
+          (static_cast<unsigned long long>(params_.is_leader) & 1ull) |
+          ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+      __threadfence();
+    }
+#endif
     full_barrier_ptr_[stage].wait(phase);
   }
 
@@ -618,6 +705,28 @@ private:
   void consumer_wait(uint32_t stage, uint32_t phase, ConsumerToken barrier_token) {
     detail::pipeline_check_is_consumer(params_.role);
     if (barrier_token == BarrierStatus::WaitAgain) {
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+      if ((threadIdx.x & 31) == 0) {
+        int const b = int(blockIdx.x);
+        int const base = (b & 63) * 8;
+        ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x434F4E53554D4552ull;  // "CONSUMER"
+        ::flashinfer_sm90_pipeline_dbg[base + 1] =
+            (static_cast<unsigned long long>(stage) & 0xFFull) |
+            ((static_cast<unsigned long long>(phase) & 0xFFull) << 8) |
+            ((static_cast<unsigned long long>(params_.transaction_bytes) & 0xFFFFFFFFull) << 16);
+        ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)full_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)empty_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&full_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 6] =
+            (static_cast<unsigned long long>(dst_blockid_) & 0xFFFFFFFFull) |
+            ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+        ::flashinfer_sm90_pipeline_dbg[base + 7] =
+            (static_cast<unsigned long long>(params_.is_leader) & 1ull) |
+            ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+        __threadfence();
+      }
+#endif
       full_barrier_ptr_[stage].wait(phase);
     }
   }
@@ -1218,6 +1327,27 @@ private:
   CUTLASS_DEVICE
   void consumer_wait(uint32_t stage, uint32_t phase) {
     detail::pipeline_check_is_consumer(params_.role);
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+    if ((threadIdx.x & 31) == 0) {
+      int const b = int(blockIdx.x);
+      int const base = (b & 63) * 8;
+      ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x434F4E53554D4552ull;  // "CONSUMER"
+      ::flashinfer_sm90_pipeline_dbg[base + 1] =
+          (static_cast<unsigned long long>(stage) & 0xFFull) |
+          ((static_cast<unsigned long long>(phase) & 0xFFull) << 8);
+      ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)full_barrier_ptr_;
+      ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)empty_barrier_ptr_;
+      ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&full_barrier_ptr_[stage]);
+      ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+      ::flashinfer_sm90_pipeline_dbg[base + 6] =
+          (static_cast<unsigned long long>(params_.dst_blockid) & 0xFFFFFFFFull) |
+          ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+      ::flashinfer_sm90_pipeline_dbg[base + 7] =
+          (static_cast<unsigned long long>(params_.initializing_warp) & 0xFFFFull) |
+          ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+      __threadfence();
+    }
+#endif
     bool done = full_barrier_ptr_[stage].test_wait(phase);
     if (!done) {
       full_barrier_ptr_[stage].wait(phase);
@@ -1228,6 +1358,27 @@ private:
   void consumer_wait(uint32_t stage, uint32_t phase, ConsumerToken barrier_token) {
     detail::pipeline_check_is_consumer(params_.role);
     if (barrier_token == BarrierStatus::WaitAgain) {
+#if defined(FLASHINFER_SM90_PIPELINE_DEBUG)
+      if ((threadIdx.x & 31) == 0) {
+        int const b = int(blockIdx.x);
+        int const base = (b & 63) * 8;
+        ::flashinfer_sm90_pipeline_dbg[base + 0] = 0x434F4E53554D4552ull;  // "CONSUMER"
+        ::flashinfer_sm90_pipeline_dbg[base + 1] =
+            (static_cast<unsigned long long>(stage) & 0xFFull) |
+            ((static_cast<unsigned long long>(phase) & 0xFFull) << 8);
+        ::flashinfer_sm90_pipeline_dbg[base + 2] = (unsigned long long)full_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 3] = (unsigned long long)empty_barrier_ptr_;
+        ::flashinfer_sm90_pipeline_dbg[base + 4] = (unsigned long long)(&full_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 5] = (unsigned long long)(&empty_barrier_ptr_[stage]);
+        ::flashinfer_sm90_pipeline_dbg[base + 6] =
+            (static_cast<unsigned long long>(params_.dst_blockid) & 0xFFFFFFFFull) |
+            ((static_cast<unsigned long long>(params_.role) & 0xFFull) << 32);
+        ::flashinfer_sm90_pipeline_dbg[base + 7] =
+            (static_cast<unsigned long long>(params_.initializing_warp) & 0xFFFFull) |
+            ((static_cast<unsigned long long>(threadIdx.x) & 0xFFFFull) << 16);
+        __threadfence();
+      }
+#endif
       full_barrier_ptr_[stage].wait(phase);
     }
   }
