@@ -386,8 +386,38 @@ struct CollectiveMma<
 
     if constexpr (IsGroupedGemmKernel) {
       // Strides for Grouped Gemm will be replaced prior to the first access regardless.
-      stride_a = InternalStrideA{};
-      stride_b = InternalStrideB{};
+      // However, TMA descriptor encoding requires valid non-zero strides.
+      // Use tile dimensions as placeholder values for the runtime stride components.
+      // The compile-time components (Int<1>, Int<0>) are preserved from the type.
+      //
+      // For RowMajor A [M,K,L]: stride = (K, Int<1>, Int<0>) → runtime component at index 0
+      // For RowMajor B [N,K,L]: stride = (Int<1>, N, Int<0>) → runtime component at index 1
+      // 
+      // We detect which component is runtime by checking if get<i> returns a non-Int type.
+      stride_a = [&]() {
+        InternalStrideA s{};
+        // For A: stride pattern is typically (runtime, Int<1>, Int<0>) for RowMajor
+        // Set the runtime component to init_K (stride between M rows)
+        if constexpr (!cute::is_static_v<decltype(cute::get<0>(s))>) {
+          return InternalStrideA(init_K, cute::get<1>(s), cute::get<2>(s));
+        } else if constexpr (!cute::is_static_v<decltype(cute::get<1>(s))>) {
+          return InternalStrideA(cute::get<0>(s), init_M, cute::get<2>(s));
+        } else {
+          return s;  // All static, use as-is
+        }
+      }();
+      stride_b = [&]() {
+        InternalStrideB s{};
+        // For B: stride pattern is typically (Int<1>, runtime, Int<0>) for RowMajor
+        // Set the runtime component to init_N (stride between K columns)
+        if constexpr (!cute::is_static_v<decltype(cute::get<0>(s))>) {
+          return InternalStrideB(init_K, cute::get<1>(s), cute::get<2>(s));
+        } else if constexpr (!cute::is_static_v<decltype(cute::get<1>(s))>) {
+          return InternalStrideB(cute::get<0>(s), init_N, cute::get<2>(s));
+        } else {
+          return s;  // All static, use as-is
+        }
+      }();
       layout_SFA = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(cute::make_shape(init_M, init_N, init_K, 1));
       layout_SFB = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFB(cute::make_shape(init_M, init_N, init_K, 1));
     }

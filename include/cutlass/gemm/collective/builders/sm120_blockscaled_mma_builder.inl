@@ -161,7 +161,20 @@ struct CollectiveBuilder<
   using Sm1xxBlkScaledConfig = cutlass::detail::Sm1xxBlockScaledConfig<SFVectorSize>;
 
   using SmemLayoutAtomA = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeA, decltype(size<2>(TileShape_MNK{}))>());
-  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
+
+  // NOTE: CTA_N can be as small as 16 for some experimental tiles. We've observed runtime
+  // `CUDA_EXCEPTION_27 Warp Illegal Instruction Parameter` failures inside the SM120 TMA mainloop
+  // for CTA_N=16 (even though descriptor encoding succeeds).
+  //
+  // Hypothesis: the default smem swizzle selection (driven purely by CTA_K) can choose a swizzle
+  // mode that is invalid for very small CTA_N on SM120/SM121. As a defensive experiment, force a
+  // smaller swizzle atom for CTA_N < 32.
+  using SmemLayoutAtomB_Default =
+      decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
+  using SmemLayoutAtomB = cute::conditional_t<
+      (size<1>(TileShape_MNK{}) < 32),
+      UMMA::Layout_K_SW32_Atom<SmemAllocTypeB>,
+      SmemLayoutAtomB_Default>;
 
   using SmemCopyAtomA = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_A<ElementA,
                                                                                  ElementB,
