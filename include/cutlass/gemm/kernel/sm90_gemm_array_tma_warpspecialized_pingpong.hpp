@@ -127,6 +127,18 @@ public:
   static constexpr bool IsGroupedGemmKernel = !cute::is_same_v<InternalStrideA, StrideA>;
   static constexpr uint32_t MinTensorMapWorkspaceAlignment = 64;
 
+  // Detect if the mainloop uses gated sequential SMEM reuse (two-phase K iteration).
+  // When IsGated is true, the kernel doubles k_tile_count for load/mma/pipeline-advance
+  // so the mainloop can run two sequential K passes (linear + gate) per work tile.
+private:
+  template<class DP, class = void>
+  struct detect_gated : std::false_type {};
+  template<class DP>
+  struct detect_gated<DP, std::void_t<decltype(DP::IsGated)>>
+      : std::bool_constant<DP::IsGated> {};
+public:
+  static constexpr bool IsGatedMainloop = detect_gated<DispatchPolicy>::value;
+
   static_assert(
     cute::is_void_v<TileScheduler_>
     or (
@@ -666,7 +678,9 @@ public:
     // Consumer1 is not on the critical path at prologue.
     if (warp_group_role == WarpGroupRole::Consumer1) [[unlikely]] {
       // Advance 2nd Math WG to the next work tile for the startup
-      const auto k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+      auto k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+      // Gated mainloop: two sequential K passes (linear + gate) per work tile
+      if constexpr (IsGatedMainloop) { k_tile_count *= 2; }
 
       auto [next_work_tile_info, increment_pipe] = scheduler.fetch_next_work(work_tile_info, tile_scheduler_pipeline, tile_scheduler_pipe_consumer_state);
       work_tile_info = next_work_tile_info;
@@ -772,6 +786,8 @@ public:
 
           // Get the number of K tiles to compute for this work as well as the starting K tile offset of the work.
           auto work_k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+          // Gated mainloop: two sequential K passes (linear + gate) per work tile
+          if constexpr (IsGatedMainloop) { work_k_tile_count *= 2; }
           auto work_k_tile_start = TileScheduler::get_work_k_tile_start(work_tile_info);
           auto k_tile_iter = cute::make_coord_iterator(idx2crd(work_k_tile_start, shape<3>(gA_mkl)), shape<3>(gA_mkl));
 
@@ -854,6 +870,8 @@ public:
 
             // Get the number of K tiles to compute for this work as well as the starting K tile offset of the work.
             auto work_k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+            // Gated mainloop: two sequential K passes (linear + gate) per work tile
+            if constexpr (IsGatedMainloop) { work_k_tile_count *= 2; }
             auto work_k_tile_start = TileScheduler::get_work_k_tile_start(work_tile_info);
             auto k_tile_iter = cute::make_coord_iterator(idx2crd(work_k_tile_start, shape<3>(gA_mkl)), shape<3>(gA_mkl));
 
@@ -1034,6 +1052,8 @@ public:
         auto l_coord = idx2crd(work_tile_info.L_idx, shape<4>(gB_nkl));
         auto blk_coord = make_coord(m_coord, n_coord, _, l_coord);
         auto work_k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+        // Gated mainloop: two sequential K passes (linear + gate) per work tile
+        if constexpr (IsGatedMainloop) { work_k_tile_count *= 2; }
 
         // Allocate the accumulators for the (M,N) blk_shape
         //
@@ -1120,6 +1140,8 @@ public:
             problem_shape_MNKL = append<4>(params.problem_shape.get_problem_shape(work_tile_info.L_idx), 1);
           }
           work_k_tile_count = TileScheduler::get_work_k_tile_count(work_tile_info, problem_shape_MNKL, blk_shape);
+          // Gated mainloop: two sequential K passes (linear + gate) per work tile
+          if constexpr (IsGatedMainloop) { work_k_tile_count *= 2; }
           mainloop_pipe_consumer_state.advance(work_k_tile_count);
 
           // Go to next tile
