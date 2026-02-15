@@ -98,10 +98,7 @@ struct CollectiveBuilder<
   static_assert(cute::is_static_v<ClusterShape_MNK>, "Cluster has to be static");
   static_assert(detail::blockscaled::check_input_datatypes<BuilderScheduleTag, ElementPairA, ElementPairB, UmmaMajorA, UmmaMajorB>(), "Incorrect input types");
   static_assert(cute::size(ClusterShape_MNK{}) == Int<1>{}, "no programmatic multicast on this arch");
-  // Relaxed from >= 32 to >= 8 to support smaller tiles for decode.
-  // The MMA atom N dimension is 8, so that's the hardware minimum.
-  static_assert(size<1>(TileShape_MNK{}) >= 8 && size<1>(TileShape_MNK{}) % 8 == 0,
-                "Tile N must be >= 8 and a multiple of 8 (MMA atom N dimension).");
+  static_assert(size<1>(TileShape_MNK{}) >= 32, "Invalid tile shape N.");
 
   static constexpr auto Instr = detail::blockscaled::select_instr<ElementPairA,
                                                                   ElementPairB,
@@ -162,19 +159,7 @@ struct CollectiveBuilder<
 
   using SmemLayoutAtomA = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeA, decltype(size<2>(TileShape_MNK{}))>());
 
-  // NOTE: CTA_N can be as small as 16 for some experimental tiles. We've observed runtime
-  // `CUDA_EXCEPTION_27 Warp Illegal Instruction Parameter` failures inside the SM120 TMA mainloop
-  // for CTA_N=16 (even though descriptor encoding succeeds).
-  //
-  // Hypothesis: the default smem swizzle selection (driven purely by CTA_K) can choose a swizzle
-  // mode that is invalid for very small CTA_N on SM120/SM121. As a defensive experiment, force a
-  // smaller swizzle atom for CTA_N < 32.
-  using SmemLayoutAtomB_Default =
-      decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
-  using SmemLayoutAtomB = cute::conditional_t<
-      (size<1>(TileShape_MNK{}) < 32),
-      UMMA::Layout_K_SW32_Atom<SmemAllocTypeB>,
-      SmemLayoutAtomB_Default>;
+  using SmemLayoutAtomB = decltype(detail::sm120_rr_smem_selector<SmemAllocTypeB, decltype(size<2>(TileShape_MNK{}))>());
 
   using SmemCopyAtomA = Copy_Atom<decltype(detail::sm120_rr_smem_copy_selector_A<ElementA,
                                                                                  ElementB,
@@ -218,11 +203,9 @@ struct CollectiveBuilder<
   using sSFA_stride       = decltype(make_stride(sSFA_strideM{}, sSFA_strideK{}));
   using SmemLayoutAtomSFA = decltype(make_layout(  sSFA_shape{},  sSFA_stride{}));
 
-  // N dimension padding for SFB (same approach)
-  static constexpr int SFB_NumBlocks = (cute::size<1>(TileShape_MNK{}) + Blk_MN{} - cute::Int<1>{}) / Blk_MN{};
-  using sSFB_shapeN       = decltype(prepend(cute::Int<SFB_NumBlocks>{},   mnBasicBlockShape{}));
+  using sSFB_shapeN       = decltype(prepend(size<1>(TileShape_MNK{}) / Blk_MN{},   mnBasicBlockShape{}));
   using sSFB_strideN      = sSF_strideMN;
-  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   cute::Int<SFB_NumBlocks>{} * Blk_Elems{}), kBasicBlockStride{}));
+  using sSFB_strideK      = decltype(prepend(make_stride(Int<MMA_NSF>{},   size<1>(TileShape_MNK{}) / Blk_MN{} * Blk_Elems{}), kBasicBlockStride{}));
   using sSFB_shape        = decltype(make_shape(  sSFB_shapeN{},   sSF_shapeK{}));
   using sSFB_stride       = decltype(make_stride(sSFB_strideN{}, sSFB_strideK{}));
   using SmemLayoutAtomSFB = decltype(make_layout(  sSFB_shape{},  sSFB_stride{}));

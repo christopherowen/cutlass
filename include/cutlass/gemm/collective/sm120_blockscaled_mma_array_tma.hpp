@@ -141,11 +141,6 @@ struct CollectiveMma<
   using TileShape_SFA = decltype(cute::make_shape(cute::Int<TileM_SFA>{}, cute::size<2>(TileShape{})));
   static constexpr bool IsCtaMSmall = cute::size<0>(TileShape{}) < 128;
 
-  // Scale factor B tile shape - N dimension padded to at least 128 for TMA
-  static constexpr int TileN_SFB = (cute::size<1>(TileShape{}) + Blk_MN{} - cute::Int<1>{}) / Blk_MN{} * Blk_MN{};
-  using TileShape_SFB = decltype(cute::make_shape(cute::Int<TileN_SFB>{}, cute::size<2>(TileShape{})));
-  static constexpr bool IsCtaNSmall = cute::size<1>(TileShape{}) < 128;
-
   // Gmem copies
   using GmemTiledCopyPairA = GmemTiledCopyPairA_;
   using GmemTiledCopyPairB = GmemTiledCopyPairB_;
@@ -332,12 +327,11 @@ struct CollectiveMma<
         _1{}));  // No programmatic multicast
 
 
-    // TMA for scale factor B - use padded tile shape (TileShape_SFB) for N < 128 compatibility
     using TMA_SFB = decltype(make_tma_copy<uint16_t>(
         GmemTiledCopySFB{},
         make_tensor(static_cast<ElementSF const*>(nullptr), InternalLayoutSFB{}),
         SmemLayoutSFB{}(_,_,cute::Int<0>{}),
-        TileShape_SFB{},
+        make_shape(shape<1>(TileShape{}), shape<2>(TileShape{})),
         _1{}));  // No programmatic multicast
 
     TMA_A tma_load_a;
@@ -463,7 +457,7 @@ struct CollectiveMma<
         GmemTiledCopySFB{},
         tensor_sfb,
         SmemLayoutSFB{}(_,_,cute::Int<0>{}),
-        TileShape_SFB{},
+        make_shape(shape<1>(TileShape{}), shape<2>(TileShape{})),
         _1{}); // No programmatic multicast
 
     return {
@@ -909,10 +903,10 @@ struct CollectiveMma<
 
     CUTE_STATIC_ASSERT_V(size<1>(tCsSFA) == size<1>(tCrSFA_copy_view));                    // CPY_M
     CUTE_STATIC_ASSERT_V(size<2>(tCsSFA) == size<2>(tCrSFA_copy_view));                    // CPY_K
-    // For small CTA dimensions, SF layouts are padded to 128 but accumulator is smaller.
-    // Skip size assertions when M or N < 128.
+    // For small CTA M, SFA layout is padded to 128 but accumulator is smaller.
+    // Skip MMA_M size assertion only when M < 128.
     if constexpr (!IsCtaMSmall) { CUTE_STATIC_ASSERT_V(size<1>(tCrSFA) == size<1>(accum)); }  // MMA_M
-    if constexpr (!IsCtaNSmall) { CUTE_STATIC_ASSERT_V(size<1>(tCrSFB) == size<2>(accum)); }  // MMA_N
+    CUTE_STATIC_ASSERT_V(size<1>(tCrSFB) == size<2>(accum));                               // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCsSFA) == size<2>(tCsSFB));                              // CPY_K
     CUTE_STATIC_ASSERT_V(size<3>(tCsSFA) == size<3>(tCsSFB));                              // PIPE
     CUTE_STATIC_ASSERT_V(size<2>(sA) == size<2>(sSFA));                                    // PIPE
